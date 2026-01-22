@@ -7,7 +7,7 @@ The **Multi-Agent Financial Risk Assessment Engine** is a scalable, AI-driven sy
 The system is built on a modular, agent-based design that ensures flexibility and scalability[cite: 107].
 
 ### High-Level Workflow
-1.  **Data Ingestion:** The system ingests structured (CSV, Excel) and unstructured (PDF, Images) financial data from a drive storage bucketand a **Data Ingestion Agent** handles parsing, schema mapping, and OCR extraction.
+1.  **Data Ingestion:** The system ingests structured (CSV, Excel) and unstructured (PDF, Images) financial data from a drive storage bucket and a **Data Ingestion Agent** handles parsing, schema mapping, and OCR extraction.
 2.  **Data Lakehouse Foundation:** Data is organized into a robust storage layer including:
     * **Graph Database:** For relationships and cascading risks.
     * **Time-Series Database:** For historical metrics and cash flow.
