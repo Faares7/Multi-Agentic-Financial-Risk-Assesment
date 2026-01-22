@@ -1,0 +1,11 @@
+loan_id,lender,principal_outstanding,interest_rate_type,base_rate,spread,currency,maturity_date
+LN-001,NBE,40000000,Fixed,None,0.14,EGP,12/31/2027
+LN-002,Banque Misr,15000000,Fixed,None,0.15,EGP,6/30/2026
+LN-003,CIB,50000000,Floating,Corridor,0.025,EGP,1/1/2025
+LN-004,QNB Alahli,25000000,Floating,Corridor,0.03,EGP,6/30/2025
+LN-005,Alex Bank,10000000,Floating,Corridor,0.035,EGP,12/31/2024
+LN-006,HSBC,2000000,Floating,SOFR,0.045,USD,3/30/2026
+LN-007,Credit Agricole,1500000,Floating,EURIBOR,0.04,EUR,1/1/2028
+LN-008,EGBank,20000000,Floating,Corridor,0.05,EGP,9/30/2024
+LN-009,ADIB,12000000,Floating,Corridor,0.06,EGP,12/31/2024
+LN-010,Holding Co,30000000,Fixed,None,0.1,EGP,1/1/2030

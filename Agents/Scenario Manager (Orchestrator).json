@@ -1,0 +1,939 @@
+{
+  "name": "Scenario Manager (Orchestrator)",
+  "nodes": [
+    {
+      "parameters": {
+        "jsCode": "const inputJson = $input.first().json;\nlet parsed;\n\n// --- PATH 1: Input comes from the Router (Already Parsed) ---\nif (inputJson.data && typeof inputJson.data === 'object') {\n  parsed = inputJson.data;\n} \n// --- PATH 2: Input comes directly from AI Agent (Raw Text) ---\nelse {\n  // Get the raw text safely\n  const aiResponse = inputJson.output || inputJson.text || inputJson.response || '';\n  \n  if (!aiResponse) {\n    throw new Error(`No input data found. Available keys: ${Object.keys(inputJson).join(', ')}`);\n  }\n\n  // Clean Markdown\n  let cleanJson = aiResponse.toString().trim();\n  if (cleanJson.startsWith('```json')) {\n    cleanJson = cleanJson.replace(/```json\\n?/g, '').replace(/```\\n?/g, '').trim();\n  } else if (cleanJson.startsWith('```')) {\n    cleanJson = cleanJson.replace(/```\\n?/g, '').trim();\n  }\n\n  // Parse Text to JSON\n  try {\n    parsed = JSON.parse(cleanJson);\n  } catch (e) {\n    throw new Error(`Failed to parse JSON string: ${e.message}`);\n  }\n}\n\n// --- VALIDATION & DEFAULTS (Runs for both paths) ---\n\n// Validate required fields\nif (!parsed.scenario_type) {\n  throw new Error('Missing scenario_type');\n}\nif (!parsed.parameters) {\n  throw new Error('Missing parameters');\n}\n\n// Ensure all required parameters exist with defaults\nconst defaultParams = {\n  projection_horizon: 12,\n  severity: 'medium',\n  speed: 'gradual',\n  revenue_growth_rate: 0,\n  revenue_volatility_multiplier: 1.0,\n  dso_change: 0,\n  dio_change: 0,\n  dpo_change: 0,\n  opex_change_rate: 0,\n  cogs_margin_change: 0,\n  new_debt_issuance: 0,\n  debt_repayment_acceleration: 0,\n  interest_rate_shock: 0,\n  credit_spread_change: 0,\n  egp_usd_devaluation: 0,\n  fx_volatility_multiplier: 1.0,\n  import_volume_change: 0,\n  inflation_shock: 0,\n  dividend_payout_rate: 0,\n  equity_injection: 0,\n  simulation_runs: 10000\n};\n\n// Merge with defaults\nparsed.parameters = { ...defaultParams, ...parsed.parameters };\n\nreturn [{ json: parsed }];"
+      },
+      "id": "59d7048d-8828-408d-8a44-806aa3d10069",
+      "name": "Parse JSON Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1504,
+        304
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Generate unique scenario ID\nconst timestamp = Date.now();\n// Added a fallback for scenario_type just in case\nconst scenarioType = $input.first().json.scenario_type || 'GENERIC';\nconst type = scenarioType.toUpperCase().replace(/_/g, '-');\nconst random = Math.floor(Math.random() * 1000).toString().padStart(3, '0');\nconst scenarioId = `SCEN-${type}-${timestamp}-${random}`;\n\nconst data = $input.first().json;\n\n// --- FIX START ---\n// We removed the reference to $('Scenario Input Webhook')\n// Now we check if user_id was passed into this node, otherwise we use 'anonymous'\nconst userId = data.user_id || 'anonymous';\n// --- FIX END ---\n\nreturn [{\n  json: {\n    scenario_id: scenarioId,\n    scenario_type: data.scenario_type,\n    scenario_description: data.scenario_description || 'No description provided',\n    parameters: data.parameters,\n    status: 'pending',\n    created_at: new Date().toISOString(),\n    user_id: userId\n  }\n}];"
+      },
+      "id": "fa3d4be5-0a53-4e9d-99bc-30da8bb87c55",
+      "name": "Generate Scenario ID",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1280,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO scenarios (\n  scenario_id, \n  scenario_type, \n  user_id, \n  scenario_description, \n  parameters, \n  agents_required, \n  status, \n  created_at\n) VALUES (\n  '{{ $json.scenario_id }}',\n  '{{ $json.scenario_type }}',\n  '{{ $json.user_id }}',\n  '{{ $json.scenario_description }}',\n  '{{ JSON.stringify($json.parameters) }}'::jsonb,\n  '[]'::jsonb,  -- FIXED: Initializes as empty JSON array\n  '{{ $json.status }}',\n  '{{ $json.created_at }}'\n) RETURNING *;",
+        "options": {}
+      },
+      "id": "c441690d-45e6-4520-9669-fb558caa8190",
+      "name": "Save Scenario to DB",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -1056,
+        400
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "K2jhT3kCt5FnkK9s",
+          "name": "Postgres account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Determine which agents to call based on scenario type\nconst scenarioType = $input.first().json.scenario_type;\n\nconst agentMapping = {\n  'revenue_shock': ['liquidity', 'debt'],\n  'fx_crisis': ['market', 'debt', 'liquidity'],\n  'debt_refinancing': ['debt'],\n  'liquidity_squeeze': ['liquidity'],\n  'recession': ['liquidity', 'debt', 'market'],\n  'growth_expansion': ['liquidity', 'debt', 'market'],\n  'cost_inflation': ['liquidity', 'debt', 'market'],\n  'operational_efficiency': ['liquidity', 'debt']\n};\n\n// Default to all 3 if unknown\nconst agents = agentMapping[scenarioType] || ['liquidity', 'debt', 'market'];\n\nconst data = $input.first().json;\n\nreturn [{\n  json: {\n    ...data,\n    agents_to_call: agents,\n    agents_completed: [],\n    agent_results: {}\n  }\n}];"
+      },
+      "id": "0bd5c691-0568-405a-9106-bc56c715b809",
+      "name": "Determine Required Agents",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -832,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE scenarios \nSET agents_required = '{{ JSON.stringify($json.agents_to_call) }}'::jsonb\nWHERE scenario_id = '{{ $json.scenario_id }}'\nRETURNING agents_required;",
+        "options": {}
+      },
+      "id": "dc562fbc-b385-4566-bc16-9d2ecf5d3287",
+      "name": "Update Agents List",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        -608,
+        400
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "K2jhT3kCt5FnkK9s",
+          "name": "Postgres account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "4a72c0f2-da3f-4811-bba5-7c4eb607a567",
+              "name": "call_liq",
+              "value": "={{ $('Determine Required Agents').first().json.agents_to_call.includes('liquidity') }}",
+              "type": "boolean"
+            },
+            {
+              "id": "b2030a47-1906-4d2c-8687-670ece577891",
+              "name": "call_debt",
+              "value": "={{ $('Determine Required Agents').first().json.agents_to_call.includes('debt') }}",
+              "type": "boolean"
+            },
+            {
+              "id": "9cc8eb88-e638-45a3-8447-15497fce0611",
+              "name": "call_market",
+              "value": "={{ $('Determine Required Agents').first().json.agents_to_call.includes('market') }}",
+              "type": "boolean"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "10d68b6e-bae6-405f-853c-d882e9d31aa9",
+      "name": "Set Agent Flags",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        -384,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "1fb21b35-0555-4832-b05e-89640f2963a6",
+              "leftValue": "={{ $json.call_liq }}",
+              "rightValue": "true",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "9754e5fe-ec3a-4f0a-af30-2911a9350a23",
+      "name": "IF Liquidity Needed",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -160,
+        160
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "82e86cf3-194c-453a-846f-a728cdf6648c",
+              "leftValue": "={{ $json.call_debt }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "463bfe4c-afae-42ac-b367-ac21fc9327f0",
+      "name": "IF Debt Needed",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -160,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "e9c129ab-6091-40fb-aa9b-f576190f72d8",
+              "leftValue": "={{ $json.call_market }}",
+              "rightValue": "true",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "e9089abc-3acc-46b2-b007-c40184675677",
+      "name": "IF Market Needed",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -160,
+        624
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://hossamnasr207.app.n8n.cloud/webhook-test/agents/liquidity",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "scenario_id",
+              "value": "={{ $('Save Scenario to DB').item.json.scenario_id }}"
+            },
+            {
+              "name": "scenario_type",
+              "value": "={{ $('Save Scenario to DB').item.json.scenario_type }}"
+            },
+            {
+              "name": "parameters",
+              "value": "={{ $('Save Scenario to DB').item.json.parameters }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "b87ba62a-d9f9-491b-9709-766e124305c6",
+      "name": "Call Liquidity Agent",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        64,
+        80
+      ],
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://nashaat.app.n8n.cloud/webhook-test/agents/market",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "scenario_id",
+              "value": "={{ $('Save Scenario to DB').item.json.scenario_id }}"
+            },
+            {
+              "name": "scenario_type",
+              "value": "={{ $('Save Scenario to DB').item.json.scenario_type }}"
+            },
+            {
+              "name": "parameters",
+              "value": "={{ $('Save Scenario to DB').item.json.parameters }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "49d385de-62ba-45e6-ab63-0a421246d658",
+      "name": "Call Market Agent",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        64,
+        672
+      ]
+    },
+    {
+      "parameters": {
+        "mode": "combine",
+        "combineBy": "combineByPosition",
+        "numberInputs": 3,
+        "options": {}
+      },
+      "id": "3962b5c7-7e3f-4682-8b2e-32392358df3a",
+      "name": "Wait for All Agents",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [
+        288,
+        384
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Merge all agent results\nconst items = $input.all();\nconst scenarioId = $('Generate Scenario ID').first().json.scenario_id;\nconst originalData = $('Set Agent Flags').first().json;\n\nconst merged = {\n  scenario_id: scenarioId,\n  scenario_type: originalData.scenario_type,\n  parameters: originalData.parameters,\n  liquidity_results: null,\n  debt_results: null,\n  market_results: null,\n  agents_completed: []\n};\n\n// Process each agent response\nfor (const item of items) {\n  const body = item.json.body || item.json;\n  \n  if (body.agent_type === 'liquidity') {\n    merged.liquidity_results = body.results;\n    merged.agents_completed.push('liquidity');\n  } else if (body.agent_type === 'debt') {\n    merged.debt_results = body.results;\n    merged.agents_completed.push('debt');\n  } else if (body.agent_type === 'market') {\n    merged.market_results = body.results;\n    merged.agents_completed.push('market');\n  }\n}\n\nreturn [{ json: merged }];"
+      },
+      "id": "d44966b3-ea38-46f2-ba45-26df2716668c",
+      "name": "Merge Agent Results",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        512,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.N8N_WEBHOOK_BASE_URL }}/webhook/simulation/run",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "scenario_id",
+              "value": "={{ $json.scenario_id }}"
+            },
+            {
+              "name": "parameters",
+              "value": "={{ JSON.stringify($json.parameters) }}"
+            },
+            {
+              "name": "liquidity_results",
+              "value": "={{ JSON.stringify($json.liquidity_results) }}"
+            },
+            {
+              "name": "debt_results",
+              "value": "={{ JSON.stringify($json.debt_results) }}"
+            },
+            {
+              "name": "market_results",
+              "value": "={{ JSON.stringify($json.market_results) }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 60000
+        }
+      },
+      "id": "b03ad117-c96e-499d-8983-dbfeca52696c",
+      "name": "Run Monte Carlo Simulation",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        736,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "UPDATE scenarios \nSET \n  status = 'completed',\n  completed_at = NOW()\nWHERE scenario_id = '{{ $json.scenario_id }}';\n\nSELECT * FROM scenarios WHERE scenario_id = '{{ $json.scenario_id }}';",
+        "options": {}
+      },
+      "id": "c4667d17-49a6-4a6d-b514-90e5f6eac5a3",
+      "name": "Update Scenario Status",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        960,
+        400
+      ],
+      "credentials": {
+        "postgres": {
+          "id": "K2jhT3kCt5FnkK9s",
+          "name": "Postgres account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={\n  \"success\": true,\n  \"scenario_id\": \"{{ $('Generate Scenario ID').first().json.scenario_id }}\",\n  \"scenario_type\": \"{{ $('Generate Scenario ID').first().json.scenario_type }}\",\n  \"status\": \"completed\",\n  \"message\": \"Scenario analysis completed successfully\",\n  \"agents_executed\": {{ JSON.stringify($('Merge Agent Results').first().json.agents_completed) }},\n  \"dashboard_url\": \"/dashboard/{{ $('Generate Scenario ID').first().json.scenario_id }}\",\n  \"api_endpoints\": {\n    \"results\": \"/api/scenarios/{{ $('Generate Scenario ID').first().json.scenario_id }}/results\",\n    \"dashboard\": \"/api/dashboard/{{ $('Generate Scenario ID').first().json.scenario_id }}\"\n  },\n  \"timestamp\": \"{{ new Date().toISOString() }}\"\n}",
+        "options": {}
+      },
+      "id": "a326b5e0-e240-4e63-8a5d-4f8538a533d0",
+      "name": "Return Results to User",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1184,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "sessionIdType": "customKey",
+        "sessionKey": "sessionID_01"
+      },
+      "id": "cca70e17-daba-497b-9798-e51fa81d93fb",
+      "name": "Window Buffer Memory",
+      "type": "@n8n/n8n-nodes-langchain.memoryBufferWindow",
+      "typeVersion": 1.2,
+      "position": [
+        -2176,
+        624
+      ]
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "={{ $json.body.message }}",
+        "options": {
+          "systemMessage": "=You are a financial scenario parameter extraction agent for a risk assessment system.\n\nYour job:\n1. Understand the user's scenario description\n2. Classify the scenario type\n3. Extract parameters using the 3-tier system\n4. Return a JSON object with all parameters\n\nScenario Types & Required Parameters:\n- revenue_shock: [revenue_growth_rate, revenue_volatility_multiplier]\n- fx_crisis: [egp_usd_devaluation, fx_volatility_multiplier]\n- debt_refinancing: [new_debt_issuance, interest_rate_shock]\n- liquidity_squeeze: [dso_change, dio_change, dpo_change]\n- recession: [revenue_growth_rate, interest_rate_shock, inflation_shock, egp_usd_devaluation]\n- cost_inflation: [cogs_margin_change, inflation_shock]\n- growth_expansion: [revenue_growth_rate, opex_change_rate, new_debt_issuance]\n\nALWAYS ask Tier 1 (universal) parameters:\n- projection_horizon (months, 1-36)\n- severity (low/medium/high)\n- speed (gradual/sudden/phased)\n\nAfter extracting user's scenario, calculate smart defaults for missing parameters:\n\nSmart Defaults Logic:\n- If revenue_growth_rate < 0: set dso_change = abs(revenue_growth_rate) * 0.5\n- If egp_usd_devaluation > 0: set cogs_margin_change = devaluation * 0.4\n- If severity = \"high\": set revenue_volatility_multiplier = 2.5\n- If severity = \"medium\": set revenue_volatility_multiplier = 1.5\n- If severity = \"low\": set revenue_volatility_multiplier = 1.2\n\nReturn ONLY valid JSON in this exact format:\n{\n  \"scenario_type\": \"revenue_shock\",\n  \"scenario_description\": \"User's original description\",\n  \"parameters\": {\n    \"projection_horizon\": 12,\n    \"severity\": \"high\",\n    \"speed\": \"sudden\",\n    \"revenue_growth_rate\": -20,\n    \"revenue_volatility_multiplier\": 2.5,\n    \"dso_change\": 10,\n    \"dio_change\": -5,\n    \"dpo_change\": 0,\n    \"opex_change_rate\": -10,\n    \"cogs_margin_change\": 0,\n    \"new_debt_issuance\": 0,\n    \"debt_repayment_acceleration\": 0,\n    \"interest_rate_shock\": 0,\n    \"credit_spread_change\": 0,\n    \"egp_usd_devaluation\": 0,\n    \"fx_volatility_multiplier\": 1.0,\n    \"import_volume_change\": 0,\n    \"inflation_shock\": 0,\n    \"dividend_payout_rate\": 0,\n    \"equity_injection\": 0,\n    \"simulation_runs\": 10000\n  }\n}\n\nDo NOT include markdown, explanations, or anything except the JSON object."
+        }
+      },
+      "id": "19001bb6-f96f-43bc-9370-000b50649dcf",
+      "name": "Financial Risk Agent (Gemini)",
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 1.7,
+      "position": [
+        -2304,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "modelName": "models/gemini-2.5-flash-lite",
+        "options": {
+          "maxOutputTokens": 2000,
+          "temperature": 0.3
+        }
+      },
+      "id": "b3775002-d90f-4aee-81dd-e8306e28ad97",
+      "name": "Google Gemini Chat Model1",
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1,
+      "position": [
+        -2304,
+        624
+      ],
+      "credentials": {
+        "googlePalmApi": {
+          "id": "4FIEIskWjgRcrJKg",
+          "name": "Google Gemini(PaLM) Api account 3"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "chat-message",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -2528,
+        400
+      ],
+      "id": "655b381d-362e-430f-a8bf-54e42d9d9f51",
+      "name": "Webhook",
+      "webhookId": "581114ed-c22a-47cd-a2ca-2fcf58357741"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Get the AI response\nconst aiResponse = $input.first().json.output || '';\n\n// CLEANING: Remove Markdown if present (```json ... ```)\nlet cleanText = aiResponse.trim();\nif (cleanText.startsWith('```')) {\n  cleanText = cleanText.replace(/```json\\n?/g, '').replace(/```\\n?/g, '').trim();\n}\n\n// CHECK: Is it JSON?\ntry {\n  // Try to parse it\n  const parsed = JSON.parse(cleanText);\n  \n  // If it parses AND has 'scenario_type', it's the Final JSON\n  if (parsed.scenario_type && parsed.parameters) {\n    return [\n      { \n        json: { \n          type: 'final_json', \n          data: parsed \n        } \n      }\n    ];\n  }\n} catch (e) {\n  // Parsing failed, so it must be a text question\n}\n\n// If we get here, it is just a text message (Question)\nreturn [\n  { \n    json: { \n      type: 'question',\n      message: aiResponse \n    } \n  }\n];"
+      },
+      "id": "888b4e33-50e9-41c2-9bc7-ba1254575008",
+      "name": "Classify Response (Text vs JSON)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1952,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict",
+            "version": 1
+          },
+          "conditions": [
+            {
+              "id": "c7e31d8d-4d55-4431-80e1-fe872c5ec532",
+              "leftValue": "={{ $json.type }}",
+              "rightValue": "final_json",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "4035760c-0d58-4aeb-a44e-c132c3a5d7ff",
+      "name": "Is Loop Finished?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        -1728,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "text",
+        "responseBody": "={{ $json.message }}",
+        "options": {}
+      },
+      "id": "69a34705-4181-462d-a433-2061b2f04bce",
+      "name": "Reply with Question",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        -1504,
+        592
+      ]
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        -1280,
+        592
+      ],
+      "id": "284fcbaa-fd44-4016-9691-aa74989bb6a9",
+      "name": "Respond to Webhook"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        -1056,
+        208
+      ],
+      "id": "6bac2202-543e-4261-aa1f-b88798537a38",
+      "name": "Respond to Webhook1"
+    },
+    {
+      "parameters": {
+        "jsCode": "return [\n  {\n    json: {\n      status: \"done\"\n    }\n  }\n];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        -1280,
+        208
+      ],
+      "id": "6e805423-fcf0-428a-a7c3-4f7f607fb0a9",
+      "name": "Code in JavaScript"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=https://amenahmedhat05.app.n8n.cloud/webhook-test/agent/debt\n",
+        "sendBody": true,
+        "bodyParameters": {
+          "parameters": [
+            {
+              "name": "scenario_id",
+              "value": "={{ $('Save Scenario to DB').item.json.scenario_id }}"
+            },
+            {
+              "name": "scenario_type",
+              "value": "={{ $('Save Scenario to DB').item.json.scenario_type }}"
+            },
+            {
+              "name": "parameters",
+              "value": "={{ $('Save Scenario to DB').item.json.parameters }}"
+            }
+          ]
+        },
+        "options": {
+          "timeout": 30000
+        }
+      },
+      "id": "d3e928cd-367b-4114-8363-d9f4ae95904e",
+      "name": "Call Debt Agent",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        64,
+        400
+      ],
+      "disabled": true
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Parse JSON Response": {
+      "main": [
+        [
+          {
+            "node": "Generate Scenario ID",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Scenario ID": {
+      "main": [
+        [
+          {
+            "node": "Save Scenario to DB",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Save Scenario to DB": {
+      "main": [
+        [
+          {
+            "node": "Determine Required Agents",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Determine Required Agents": {
+      "main": [
+        [
+          {
+            "node": "Update Agents List",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Agents List": {
+      "main": [
+        [
+          {
+            "node": "Set Agent Flags",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Set Agent Flags": {
+      "main": [
+        [
+          {
+            "node": "IF Liquidity Needed",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "IF Debt Needed",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "IF Market Needed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Liquidity Needed": {
+      "main": [
+        [
+          {
+            "node": "Call Liquidity Agent",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Wait for All Agents",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "IF Debt Needed": {
+      "main": [
+        [
+          {
+            "node": "Call Debt Agent",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Wait for All Agents",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "IF Market Needed": {
+      "main": [
+        [
+          {
+            "node": "Call Market Agent",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Wait for All Agents",
+            "type": "main",
+            "index": 2
+          }
+        ]
+      ]
+    },
+    "Call Liquidity Agent": {
+      "main": [
+        [
+          {
+            "node": "Wait for All Agents",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Wait for All Agents": {
+      "main": [
+        [
+          {
+            "node": "Merge Agent Results",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Agent Results": {
+      "main": [
+        [
+          {
+            "node": "Run Monte Carlo Simulation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Run Monte Carlo Simulation": {
+      "main": [
+        [
+          {
+            "node": "Update Scenario Status",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update Scenario Status": {
+      "main": [
+        [
+          {
+            "node": "Return Results to User",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Market Agent": {
+      "main": [
+        [
+          {
+            "node": "Wait for All Agents",
+            "type": "main",
+            "index": 2
+          }
+        ]
+      ]
+    },
+    "Window Buffer Memory": {
+      "ai_memory": [
+        [
+          {
+            "node": "Financial Risk Agent (Gemini)",
+            "type": "ai_memory",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Gemini Chat Model1": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "Financial Risk Agent (Gemini)",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Financial Risk Agent (Gemini)": {
+      "main": [
+        [
+          {
+            "node": "Classify Response (Text vs JSON)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Financial Risk Agent (Gemini)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify Response (Text vs JSON)": {
+      "main": [
+        [
+          {
+            "node": "Is Loop Finished?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Loop Finished?": {
+      "main": [
+        [
+          {
+            "node": "Parse JSON Response",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Reply with Question",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reply with Question": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook1",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Debt Agent": {
+      "main": [
+        [
+          {
+            "node": "Wait for All Agents",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "ccea9aea-ffb6-4901-9d27-39039e3e13ed",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "bfa12da088f7c3b2eee9771364a85eabf4416729e95b135e9583491a96c15fe5"
+  },
+  "id": "JdmvrQzqCL0whGDY",
+  "tags": [
+    {
+      "updatedAt": "2025-12-22T06:43:09.086Z",
+      "createdAt": "2025-12-22T06:43:09.086Z",
+      "id": "Y5S1SgbTQ8jRSyIp",
+      "name": "orchestrator"
+    },
+    {
+      "updatedAt": "2025-12-22T06:43:09.123Z",
+      "createdAt": "2025-12-22T06:43:09.123Z",
+      "id": "cuzhMTGSWv6Qr2Dc",
+      "name": "scenario-analysis"
+    }
+  ]
+}

@@ -1,0 +1,378 @@
+{
+  "name": "Debt Agent",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "agent/debt",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -224,
+        64
+      ],
+      "id": "e5c9e068-e87d-478f-a5ff-b6a1e1e89877",
+      "name": "Webhook",
+      "webhookId": "cb12212d-0479-4221-bad3-ce2c19b5e21d"
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "-- Node: Query Financial & Debt Data\nWITH latest_financials AS (\n    SELECT\n        report_date,\n        total_assets,\n        total_liabilities,\n        total_equity,\n        retained_earnings,\n        current_assets,\n        accounts_payable_total,\n        short_term_debt,\n        -- Calculate current liabilities\n        (accounts_payable_total + short_term_debt) AS current_liabilities,\n        revenue,\n        cogs,\n        operating_expenses,\n        ebitda,\n        ebit,  -- MUST include for depreciation calc\n        -- Calculate depreciation\n        (ebitda - ebit) AS depreciation,\n        interest_expense,\n        principal_repayments,\n        total_debt,\n        -- Additional useful fields\n        long_term_debt,\n        cash_total_egp_eq\n    FROM financial_statements_monthly\n    ORDER BY report_date DESC\n    LIMIT 1\n),\ndebt_info AS (\n    -- Calculate floating rate debt exposure\n    SELECT\n        COALESCE(SUM(principal_outstanding), 0) as total_floating_debt,\n        COALESCE(SUM(CASE WHEN interest_rate_type = 'Fixed' THEN principal_outstanding ELSE 0 END), 0) as total_fixed_debt,\n        COUNT(*) as loan_count,\n        COALESCE(AVG(CASE WHEN interest_rate_type = 'Floating' THEN spread ELSE NULL END), 0) as avg_floating_spread\n    FROM debt_instruments  -- NOT \"new_debt_instruments\"\n),\nmarket_data AS (\n    -- Get latest market rates\n    SELECT\n        egp_usd_rate,\n        cbe_corridor_rate,\n        risk_free_rate_eg,\n        inflation_rate\n    FROM market_indices_daily\n    ORDER BY date DESC\n    LIMIT 1\n)\nSELECT\n    lf.*,\n    di.total_floating_debt,\n    di.total_fixed_debt,\n    di.loan_count,\n    di.avg_floating_spread,\n    md.egp_usd_rate,\n    md.cbe_corridor_rate,\n    md.risk_free_rate_eg,\n    md.inflation_rate\nFROM latest_financials lf\nCROSS JOIN debt_info di  -- Use CROSS JOIN instead of comma\nCROSS JOIN market_data md;",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        32,
+        16
+      ],
+      "id": "68b13082-5a6c-4f8f-8092-8cb0e65593bb",
+      "name": "Execute a SQL query",
+      "credentials": {
+        "postgres": {
+          "id": "K2jhT3kCt5FnkK9s",
+          "name": "Postgres account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "schema": {
+          "__rl": true,
+          "mode": "list",
+          "value": "public"
+        },
+        "table": {
+          "__rl": true,
+          "value": "agent_results",
+          "mode": "list",
+          "cachedResultName": "agent_results"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "month": "={{ $json.results[0].month }}",
+            "scenario_id": "={{ $json.results[0].scenario_id }}",
+            "agent_type": "={{ $json.results[0].agent_type }}",
+            "metrics": "={{ $json.results[0].metrics }}",
+            "projected_values": "={{ $json.results[0].projected_values }}"
+          },
+          "matchingColumns": [
+            "id"
+          ],
+          "schema": [
+            {
+              "id": "id",
+              "displayName": "id",
+              "required": false,
+              "defaultMatch": true,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "scenario_id",
+              "displayName": "scenario_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "agent_type",
+              "displayName": "agent_type",
+              "required": true,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "month",
+              "displayName": "month",
+              "required": true,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "metrics",
+              "displayName": "metrics",
+              "required": true,
+              "defaultMatch": false,
+              "display": true,
+              "type": "object",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "projected_values",
+              "displayName": "projected_values",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "object",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "created_at",
+              "displayName": "created_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        240,
+        368
+      ],
+      "id": "bd700fab-6d5d-4541-9eff-ef286a5a22ec",
+      "name": "Insert rows in a table",
+      "credentials": {
+        "postgres": {
+          "id": "K2jhT3kCt5FnkK9s",
+          "name": "Postgres account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// Get data from SQL query\nconst data = items[0].json;\nconst webhookData = $('Webhook').first().json;\n\n// Extract scenario parameters\nconst scenario_id = webhookData.body?.scenario_id || webhookData.scenario_id;\nconst params = webhookData.body?.parameters || webhookData.parameters;\n\nif (!scenario_id || !params) {\n    throw new Error('Missing scenario_id or parameters from orchestrator');\n}\n\n// Safe number conversion\nconst safeFloat = (val) => val ? parseFloat(val) : 0;\n\n// Extract baseline values\nconst baselineEbitda = safeFloat(data.ebitda);\nconst baselineInterest = safeFloat(data.interest_expense);\nconst baselinePrincipal = safeFloat(data.principal_repayments);\nconst baselineTotalDebt = safeFloat(data.total_debt);\nconst baselineEbit = safeFloat(data.ebit);\nconst floatingDebt = safeFloat(data.total_floating_debt);\nconst baselineRevenue = safeFloat(data.revenue);\nconst baselineCogs = safeFloat(data.cogs);\nconst baselineOpex = safeFloat(data.operating_expenses);\n\n// Extract parameters\nconst projection_horizon = params.projection_horizon || 12;\nconst revenue_growth_rate = params.revenue_growth_rate || 0;\nconst cogs_margin_change = params.cogs_margin_change || 0;\nconst opex_change_rate = params.opex_change_rate || 0;\nconst interest_rate_shock = params.interest_rate_shock || 0;\nconst new_debt_issuance = params.new_debt_issuance || 0;\nconst debt_repayment_acceleration = params.debt_repayment_acceleration || 0;\n\nconst results = [];\n\n// Project forward\nfor (let month = 1; month <= projection_horizon; month++) {\n    // Project revenue\n    const projectedRevenue = baselineRevenue * Math.pow(\n        (1 + revenue_growth_rate / 100), \n        month\n    );\n    \n    // Project COGS (with margin change)\n    const baselineCogsMargin = baselineRevenue > 0 ? baselineCogs / baselineRevenue : 0.6;\n    const projectedCogsMargin = baselineCogsMargin + (cogs_margin_change / 100);\n    const projectedCogs = projectedRevenue * projectedCogsMargin;\n    \n    // Project OPEX\n    const projectedOpex = baselineOpex * Math.pow(\n        (1 + opex_change_rate / 100), \n        month\n    );\n    \n    // Calculate EBITDA\n    const projectedEbitda = projectedRevenue - projectedCogs - projectedOpex;\n    \n    // Calculate interest (with rate shock on floating debt)\n    const baseInterestRate = baselineInterest / (floatingDebt || 1);\n    const shockedRate = baseInterestRate + (interest_rate_shock / 10000);\n    const projectedInterest = (floatingDebt * shockedRate) + \n        ((baselineTotalDebt - floatingDebt) * baseInterestRate);\n    \n    // Calculate principal (with acceleration)\n    const projectedPrincipal = baselinePrincipal * (1 + debt_repayment_acceleration / 100);\n    \n    // Calculate DSCR\n    const dscr = (projectedInterest + projectedPrincipal) > 0 \n        ? projectedEbitda / (projectedInterest + projectedPrincipal)\n        : 999;\n    \n    // Calculate Debt to EBITDA\n    const currentDebt = baselineTotalDebt + new_debt_issuance - (projectedPrincipal * month);\n    const debtToEbitda = projectedEbitda > 0 ? currentDebt / projectedEbitda : 999;\n    \n    // Calculate Interest Coverage\n    const interestCoverage = projectedInterest > 0 ? projectedEbitda / projectedInterest : 999;\n    \n    // Simplified Altman Z-Score (need more data for full calc)\n    const altmanZ = 2.0; // Placeholder - needs full calculation\n    \n    results.push({\n        scenario_id: scenario_id,\n        agent_type: 'debt',\n        month: month,\n        metrics: {\n            dscr: Number(dscr.toFixed(2)),\n            debt_to_ebitda: Number(debtToEbitda.toFixed(2)),\n            interest_coverage: Number(interestCoverage.toFixed(2)),\n            altman_z: Number(altmanZ.toFixed(2)),\n            interest_sensitivity: Number((interest_rate_shock / 100).toFixed(4))\n        },\n        projected_values: {\n            ebitda: Number(projectedEbitda.toFixed(2)),\n            interest_expense: Number(projectedInterest.toFixed(2)),\n            principal_payment: Number(projectedPrincipal.toFixed(2)),\n            total_debt: Number(currentDebt.toFixed(2)),\n            revenue: Number(projectedRevenue.toFixed(2)),\n            cogs: Number(projectedCogs.toFixed(2)),\n            opex: Number(projectedOpex.toFixed(2))\n        }\n    });\n}\n\nreturn [{\n    json: {\n        agent_type: 'debt',\n        scenario_id: scenario_id,\n        results: results\n    }\n}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        192,
+        80
+      ],
+      "id": "baf5dd4d-3675-4819-ae14-ea153cc2024f",
+      "name": "Code in JavaScript"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{JSON.stringify($json)}}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        656,
+        80
+      ],
+      "id": "2c7317cf-2a79-4333-86fd-aa93f161932d",
+      "name": "Respond to Webhook"
+    },
+    {
+      "parameters": {
+        "operation": "upsert",
+        "schema": {
+          "__rl": true,
+          "mode": "list",
+          "value": "public"
+        },
+        "table": {
+          "__rl": true,
+          "value": "agent_results",
+          "mode": "list",
+          "cachedResultName": "agent_results"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "scenario_id": "={{ $json.results[0].scenario_id }}",
+            "month": "={{ $json.results[0].month }}",
+            "agent_type": "={{ $json.results[0].agent_type }}",
+            "metrics": "={{ $json.results[0].metrics }}",
+            "projected_values": "={{ $json.results[0].projected_values }}"
+          },
+          "matchingColumns": [
+            "scenario_id",
+            "agent_type",
+            "month"
+          ],
+          "schema": [
+            {
+              "id": "id",
+              "displayName": "id",
+              "required": false,
+              "defaultMatch": true,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "scenario_id",
+              "displayName": "scenario_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "agent_type",
+              "displayName": "agent_type",
+              "required": true,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "month",
+              "displayName": "month",
+              "required": true,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "metrics",
+              "displayName": "metrics",
+              "required": true,
+              "defaultMatch": false,
+              "display": true,
+              "type": "object",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "projected_values",
+              "displayName": "projected_values",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "object",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "created_at",
+              "displayName": "created_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "canBeUsedToMatch": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        400,
+        144
+      ],
+      "id": "e613e113-aa2b-4cd5-8ba6-820076ea5a88",
+      "name": "Insert or update rows in a table",
+      "credentials": {
+        "postgres": {
+          "id": "K2jhT3kCt5FnkK9s",
+          "name": "Postgres account 2"
+        }
+      }
+    },
+    {
+      "parameters": {},
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        -144,
+        176
+      ],
+      "id": "25e1dcdf-6310-4e61-8a43-8381d0ff389b",
+      "name": "When clicking ‘Execute workflow’"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Execute a SQL query",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute a SQL query": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript": {
+      "main": [
+        [
+          {
+            "node": "Insert or update rows in a table",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert rows in a table": {
+      "main": [
+        []
+      ]
+    },
+    "Insert or update rows in a table": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "When clicking ‘Execute workflow’": {
+      "main": [
+        []
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "0a18d59f-3500-4026-86ac-3461f361d3f5",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "bfa12da088f7c3b2eee9771364a85eabf4416729e95b135e9583491a96c15fe5"
+  },
+  "id": "sW8E4rjWtOWawzg5",
+  "tags": []
+}

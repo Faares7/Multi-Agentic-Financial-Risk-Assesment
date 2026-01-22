@@ -1,0 +1,363 @@
+{
+  "name": "Liquidity Agent",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "agents/liquidity",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        -240,
+        112
+      ],
+      "id": "c7ddf4b1-1506-49a9-8604-17a199c7477c",
+      "name": "Webhook",
+      "webhookId": "20c2af4c-97b6-4e43-8d17-697be5e66d62",
+      "disabled": true
+    },
+    {
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT * FROM financial_statements_monthly\nORDER BY report_date DESC\nLIMIT 60; -- Last 60 months for volatility calculation",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        32,
+        16
+      ],
+      "id": "3702b9ad-69eb-4bda-a2e9-0db87a4b81c6",
+      "name": "Execute a SQL query",
+      "credentials": {
+        "postgres": {
+          "id": "K2jhT3kCt5FnkK9s",
+          "name": "Postgres account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "schema": {
+          "__rl": true,
+          "mode": "list",
+          "value": "public"
+        },
+        "table": {
+          "__rl": true,
+          "value": "agent_results",
+          "mode": "list",
+          "cachedResultName": "agent_results"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "month": "={{ $json.results[0].month }}",
+            "scenario_id": "={{ $json.results[0].scenario_id }}",
+            "agent_type": "={{ $json.results[0].agent_type }}",
+            "metrics": "={{ $json.results[0].metrics }}",
+            "projected_values": "={{ $json.results[0].projected_values }}"
+          },
+          "matchingColumns": [
+            "id"
+          ],
+          "schema": [
+            {
+              "id": "id",
+              "displayName": "id",
+              "required": false,
+              "defaultMatch": true,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "scenario_id",
+              "displayName": "scenario_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "agent_type",
+              "displayName": "agent_type",
+              "required": true,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "month",
+              "displayName": "month",
+              "required": true,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "metrics",
+              "displayName": "metrics",
+              "required": true,
+              "defaultMatch": false,
+              "display": true,
+              "type": "object",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "projected_values",
+              "displayName": "projected_values",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "object",
+              "canBeUsedToMatch": true
+            },
+            {
+              "id": "created_at",
+              "displayName": "created_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "canBeUsedToMatch": true
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        240,
+        368
+      ],
+      "id": "72840823-99d0-4002-9def-e8b4e4ed1aef",
+      "name": "Insert rows in a table",
+      "credentials": {
+        "postgres": {
+          "id": "K2jhT3kCt5FnkK9s",
+          "name": "Postgres account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "jsCode": "// 1. EXTRACT DATA\n// The 'items' variable is automatically available in n8n JS nodes.\n// We map the incoming SQL rows into a clean array.\nconst historicalData = items.map(item => item.json);\n\n// 2. DEFINE SIMULATION PARAMETERS\n// Since the SQL node only provides history, we define projection settings here.\n// You can change these numbers to adjust your scenario.\nconst params = {\n  projection_horizon: 12,    // Project 12 months ahead\n  revenue_growth_rate: 5,    // 5% monthly growth\n  dso_change: 0,             // Change in Days Sales Outstanding\n  dio_change: 0,             // Change in Days Inventory Outstanding\n  dpo_change: 0,             // Change in Days Payable Outstanding\n  opex_change_rate: 2,       // 2% monthly increase in OpEx\n  scenario_id: 'scenario_001'\n};\n\n// 3. GET BASELINE (Latest Month)\nif (historicalData.length === 0) {\n  return [{json: {error: \"No historical data found\"}}];\n}\n\n// Get the last row from the SQL results\nconst baseline = historicalData[historicalData.length - 1];\n\n// Helper function to safely convert SQL strings/nulls to numbers\nconst safeFloat = (val) => val ? parseFloat(val) : 0;\n\n// Extract baseline values safely\nconst baselineRevenue = safeFloat(baseline.revenue);\nconst baselineReceivables = safeFloat(baseline.trade_receivables_total);\nconst baselineInventory = safeFloat(baseline.inventory);\nconst baselinePayables = safeFloat(baseline.accounts_payable_total);\nconst baselineCash = safeFloat(baseline.cash_total_egp_eq);\nconst baselineCurrentAssets = safeFloat(baseline.current_assets);\nconst baselineCurrentLiabilities = safeFloat(baseline.total_liabilities); // Using Total Liab as proxy if Current is missing\nconst baselineOpex = safeFloat(baseline.operating_expenses);\nconst baselineCogs = safeFloat(baseline.cogs);\nconst baselineShortTermDebt = safeFloat(baseline.short_term_debt);\nconst baselineTotalDebt = safeFloat(baseline.total_debt);\n\n// Calculate Baseline Ratios\nconst baselineDso = baselineRevenue ? (baselineReceivables / baselineRevenue) * 30 : 0;\nconst baselineDio = baselineCogs ? (baselineInventory / baselineCogs) * 30 : 0;\nconst baselineDpo = baselineCogs ? (baselinePayables / baselineCogs) * 30 : 0;\n\nconst results = [];\n\n// 4. PROJECTION LOOP\nfor (let month = 1; month <= params.projection_horizon; month++) {\n    \n    // Apply Revenue Growth\n    const projectedRevenue = baselineRevenue * Math.pow((1 + params.revenue_growth_rate / 100), month);\n\n    // Projected Working Capital\n    const projectedDso = baselineDso + params.dso_change;\n    const projectedReceivables = (projectedRevenue / 30) * projectedDso;\n\n    const projectedDio = baselineDio + params.dio_change;\n    const projectedCogs = baselineRevenue ? projectedRevenue * (baselineCogs / baselineRevenue) : 0;\n    const projectedInventory = (projectedCogs / 30) * projectedDio;\n\n    const projectedDpo = baselineDpo + params.dpo_change;\n    const projectedPayables = (projectedCogs / 30) * projectedDpo;\n\n    // Cash Conversion Cycle\n    const ccc = projectedDso + projectedDio - projectedDpo;\n\n    // Operating Expenses\n    const projectedOpex = baselineOpex * Math.pow((1 + params.opex_change_rate / 100), month);\n\n    // Monthly Burn Rate\n    // (Money Out - Money In)\n    const collections = projectedRevenue / (1 + projectedDso / 30);\n    const payments = projectedCogs + projectedOpex;\n    const monthlyBurn = payments - collections;\n\n    // Projected Cash Position\n    const projectedCash = baselineCash - (monthlyBurn * month);\n\n    // Runway (Months until cash runs out)\n    let runway = 999;\n    if (monthlyBurn > 0) {\n        runway = projectedCash / monthlyBurn;\n    }\n\n    // Current Ratio\n    const projectedCurrentAssets = projectedCash + projectedReceivables + projectedInventory;\n    const projectedCurrentLiabilities = projectedPayables + baselineShortTermDebt;\n    const currentRatio = projectedCurrentLiabilities > 0 ? projectedCurrentAssets / projectedCurrentLiabilities : 0;\n\n    // Defensive Interval Ratio\n    const defensiveAssets = projectedCash + projectedReceivables;\n    const defensiveInterval = projectedOpex > 0 ? (defensiveAssets / projectedOpex) * 30 : 0;\n\n    // Working Capital Turnover\n    const workingCapital = projectedCurrentAssets - projectedCurrentLiabilities;\n    const wcTurnover = workingCapital > 0 ? projectedRevenue / workingCapital : 0;\n\n    // CF to Debt Ratio\n    const operatingCf = projectedRevenue - projectedCogs - projectedOpex;\n    const cfToDebt = baselineTotalDebt > 0 ? operatingCf / baselineTotalDebt : 0;\n\n    // Push Result Object\n    results.push({\n        scenario_id: params.scenario_id,\n        agent_type: 'liquidity',\n        month: month,\n        metrics: {\n            cash_conversion_cycle: Number(ccc.toFixed(2)),\n            burn_rate: Number(monthlyBurn.toFixed(2)),\n            runway: Number(runway.toFixed(2)),\n            current_ratio: Number(currentRatio.toFixed(2)),\n            defensive_interval: Number(defensiveInterval.toFixed(2)),\n            cf_to_debt_ratio: Number(cfToDebt.toFixed(4)),\n            wc_turnover: Number(wcTurnover.toFixed(2))\n        },\n        projected_values: {\n            cash: Number(projectedCash.toFixed(2)),\n            receivables: Number(projectedReceivables.toFixed(2)),\n            inventory: Number(projectedInventory.toFixed(2)),\n            current_assets: Number(projectedCurrentAssets.toFixed(2)),\n            current_liabilities: Number(projectedCurrentLiabilities.toFixed(2))\n        }\n    });\n}\n\n// Return the results wrapped in the structure n8n expects\nreturn [{json: {results: results}}];"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        192,
+        80
+      ],
+      "id": "1b59d0f2-a787-46b4-88ff-2f1a6d795411",
+      "name": "Code in JavaScript"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{JSON.stringify($json)}}",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        656,
+        80
+      ],
+      "id": "a86bd67f-5841-43f8-96aa-6c5c6fa67ae2",
+      "name": "Respond to Webhook"
+    },
+    {
+      "parameters": {
+        "operation": "upsert",
+        "schema": {
+          "__rl": true,
+          "mode": "list",
+          "value": "public"
+        },
+        "table": {
+          "__rl": true,
+          "value": "agent_results",
+          "mode": "list",
+          "cachedResultName": "agent_results"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "month": "={{ $json.results[0].month }}",
+            "scenario_id": "={{ $json.results[0].scenario_id }}",
+            "agent_type": "={{ $json.results[0].agent_type }}",
+            "metrics": "={{ $json.results[0].metrics }}",
+            "projected_values": "={{ $json.results[0].projected_values }}"
+          },
+          "matchingColumns": [
+            "scenario_id",
+            "agent_type",
+            "month"
+          ],
+          "schema": [
+            {
+              "id": "id",
+              "displayName": "id",
+              "required": false,
+              "defaultMatch": true,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "removed": true
+            },
+            {
+              "id": "scenario_id",
+              "displayName": "scenario_id",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "agent_type",
+              "displayName": "agent_type",
+              "required": true,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "month",
+              "displayName": "month",
+              "required": true,
+              "defaultMatch": false,
+              "display": true,
+              "type": "number",
+              "canBeUsedToMatch": true,
+              "removed": false
+            },
+            {
+              "id": "metrics",
+              "displayName": "metrics",
+              "required": true,
+              "defaultMatch": false,
+              "display": true,
+              "type": "object",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "projected_values",
+              "displayName": "projected_values",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "object",
+              "canBeUsedToMatch": false
+            },
+            {
+              "id": "created_at",
+              "displayName": "created_at",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "dateTime",
+              "canBeUsedToMatch": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.6,
+      "position": [
+        400,
+        144
+      ],
+      "id": "bbff2ac5-0491-4d5e-b2a8-d4b4543427fa",
+      "name": "Insert or update rows in a table",
+      "credentials": {
+        "postgres": {
+          "id": "K2jhT3kCt5FnkK9s",
+          "name": "Postgres account 2"
+        }
+      }
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Execute a SQL query",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Execute a SQL query": {
+      "main": [
+        [
+          {
+            "node": "Code in JavaScript",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Code in JavaScript": {
+      "main": [
+        [
+          {
+            "node": "Insert or update rows in a table",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Insert rows in a table": {
+      "main": [
+        []
+      ]
+    },
+    "Insert or update rows in a table": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "0fed4f18-88a8-4679-a739-573cccab40fa",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "bfa12da088f7c3b2eee9771364a85eabf4416729e95b135e9583491a96c15fe5"
+  },
+  "id": "rdZAobVkwByVLoX6",
+  "tags": []
+}
